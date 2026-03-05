@@ -105,6 +105,6 @@ Model checkpoints are saved as:
 
 ## Citation
 
-WFSIM: https://github.com/TUDelft-DataDrivenControl/WFSim
+WFSIM: https://github.com/TUDelft-DataDrivenControl/WFSim \
 Based on a 2-turbine case provided to me by Yuhan Su
 
