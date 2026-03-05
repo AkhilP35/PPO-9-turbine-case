@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import matlab.engine
 import os
+import csv
 from ppo_agent_9turbine import PPO_Continuous, ReplayBuffer, Normalization
 
 
@@ -94,6 +95,19 @@ def main(args):
     state_norm = Normalization(shape=args.state_dim)
 
     total_steps = 0
+    episode_idx = 0
+
+    # Initialize CSV (write header once)
+    csv_path = "episode_summary.csv"
+    if not os.path.exists(csv_path):
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            header = (
+                ["episode", "mean_power_mw", "max_power_mw"]
+                + [f"mean_yaw_{i+1}" for i in range(9)]
+                + [f"last_yaw_{i+1}" for i in range(9)]
+            )
+            writer.writerow(header)
 
     while total_steps < args.max_train_steps:
         s = env.reset()
@@ -103,12 +117,19 @@ def main(args):
         episode_reward = 0
         done = False
 
+        yaw_history = []
+        power_history = []
+
         while not done:
             # Choose action (returns value in [-1, 1])
             a, a_logprob = agent.choose_action(s)
 
             # Execute in environment
             s_, r, done = env.step(a)
+
+            # Save yaw + power from the environment state
+            yaw_history.append(s_[:9])   # 9 yaw values (degrees)
+            power_history.append(s_[9])  # total power (MW)
 
             # Normalize Next State
             if args.use_state_norm:
@@ -133,6 +154,22 @@ def main(args):
                 print(f"Step: {total_steps}, Episode Reward (Current): {episode_reward:.4f}")
 
         print(f"Episode Finished. Total Reward: {episode_reward:.4f}")
+
+        # --- Episode summary logging ---
+        yaw_array = np.vstack(yaw_history)     # shape (T, 9)
+        power_array = np.array(power_history)  # shape (T,)
+
+        mean_yaw = yaw_array.mean(axis=0)
+        last_yaw = yaw_array[-1]
+        mean_power = power_array.mean()
+        max_power = power_array.max()
+
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            row = [episode_idx, mean_power, max_power] + mean_yaw.tolist() + last_yaw.tolist()
+            writer.writerow(row)
+
+        episode_idx += 1
 
         # Save Models
         if total_steps % args.save_freq == 0:
