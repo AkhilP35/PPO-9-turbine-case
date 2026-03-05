@@ -103,13 +103,8 @@ Model checkpoints are saved as:
 - Episode termination is currently time-limit only (`max_steps`), not a failure condition.
 - This repo expects MATLAB scripts `Initial_9` and `Timestep_9` to be callable from MATLAB’s path.
 
-## Citation / attribution
+## Citation
 
-If this work is part of a dissertation or a project report, consider adding:
-- a reference to WFSim
-- the specific wind-farm layout / scenario used
-- any relevant papers for PPO / GAE
+WFSIM: https://github.com/TUDelft-DataDrivenControl/WFSim
+Based on a 2-turbine case provided to me by Yuhan Su
 
-## License
-
-No license file is currently included. Add a `LICENSE` file if you want to define usage terms.
