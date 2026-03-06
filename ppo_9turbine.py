@@ -20,6 +20,7 @@ class WindFarmEnv:
         self.eng.addpath(os.path.join(base_path, 'layoutDefinitions'))
         self.eng.addpath(os.path.join(base_path, 'controlDefinitions'))
         self.eng.addpath(os.path.join(base_path, 'solverDefinitions'))
+        self.eng.addpath(os.path.join('/Users/akhilpatel/Desktop/Dissertation', 'PPO-9-turbine-case'))
         self.eng.cd(base_path, nargout=0)
         print("Paths added to MATLAB...")
 
@@ -103,7 +104,7 @@ def main(args):
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             header = (
-                ["episode", "mean_power_mw", "max_power_mw"]
+                ["episode", "total_steps", "episode_step", "row_type", "mean_power_mw", "max_power_mw"]
                 + [f"mean_yaw_{i+1}" for i in range(9)]
                 + [f"last_yaw_{i+1}" for i in range(9)]
             )
@@ -127,9 +128,29 @@ def main(args):
             # Execute in environment
             s_, r, done = env.step(a)
 
-            # Save yaw + power from the environment state
+            # Save yaw + power from the environment state (UN-normalized)
             yaw_history.append(s_[:9])   # 9 yaw values (degrees)
             power_history.append(s_[9])  # total power (MW)
+
+            # Log every 100 steps inside the episode (rolling from episode start)
+            episode_step = len(power_history)  # 1-based step count within this episode
+            if episode_step % 100 == 0:
+                yaw_array = np.vstack(yaw_history)     # (T, 9)
+                power_array = np.array(power_history)  # (T,)
+
+                mean_yaw = yaw_array.mean(axis=0)
+                last_yaw = yaw_array[-1]
+                mean_power = power_array.mean()
+                max_power = power_array.max()
+
+                with open(csv_path, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    row = (
+                        [episode_idx, total_steps, episode_step, "STEP100", mean_power, max_power]
+                        + mean_yaw.tolist()
+                        + last_yaw.tolist()
+                    )
+                    writer.writerow(row)
 
             # Normalize Next State
             if args.use_state_norm:
@@ -149,13 +170,13 @@ def main(args):
                 agent.update(replay_buffer, total_steps)
                 replay_buffer.count = 0
 
-            # Logging
+            # Console logging
             if total_steps % 100 == 0:
                 print(f"Step: {total_steps}, Episode Reward (Current): {episode_reward:.4f}")
 
         print(f"Episode Finished. Total Reward: {episode_reward:.4f}")
 
-        # --- Episode summary logging ---
+        # --- Episode-end summary logging (distinct row) ---
         yaw_array = np.vstack(yaw_history)     # shape (T, 9)
         power_array = np.array(power_history)  # shape (T,)
 
@@ -166,7 +187,11 @@ def main(args):
 
         with open(csv_path, "a", newline="") as f:
             writer = csv.writer(f)
-            row = [episode_idx, mean_power, max_power] + mean_yaw.tolist() + last_yaw.tolist()
+            row = (
+                [episode_idx, total_steps, len(power_history), "EPISODE_END", mean_power, max_power]
+                + mean_yaw.tolist()
+                + last_yaw.tolist()
+            )
             writer.writerow(row)
 
         episode_idx += 1
