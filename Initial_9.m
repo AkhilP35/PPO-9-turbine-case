@@ -6,6 +6,9 @@ function [Wp, sol, sys] = Initial_9()
     % Select wind farm layout and define solver options
     Wp = layoutSet_sowfa_9turb_apc_alm_turbl(); 
     modelOptions = solverSet_default(Wp); 
+
+    % Start from a uniform flow field (1) or from a fully developed waked flow field (0).
+    Wp.sim.startUniform = 0;
     
     % Set display and visualization preferences
     verboseOptions.printProgress = 1;    % Show progress in command window
