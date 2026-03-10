@@ -132,16 +132,18 @@ def main(args):
             yaw_history.append(s_[:9])   # 9 yaw values (degrees)
             power_history.append(s_[9])  # total power (MW)
 
-            # Log every 100 steps inside the episode (rolling from episode start)
             episode_step = len(power_history)  # 1-based step count within this episode
-            if episode_step % 100 == 0:
-                yaw_array = np.vstack(yaw_history)     # (T, 9)
-                power_array = np.array(power_history)  # (T,)
 
-                mean_yaw = yaw_array.mean(axis=0)
-                last_yaw = yaw_array[-1]
-                mean_power = power_array.mean()
-                max_power = power_array.max()
+            # Log every 100 steps inside the episode:
+            # stats are computed over *this 100-step block* (not from episode start)
+            if episode_step % 100 == 0:
+                yaw_block = np.vstack(yaw_history[-100:])     # (100, 9)
+                power_block = np.array(power_history[-100:])  # (100,)
+
+                mean_yaw = yaw_block.mean(axis=0)
+                last_yaw = yaw_block[-1]
+                mean_power = power_block.mean()
+                max_power = power_block.max()
 
                 with open(csv_path, "a", newline="") as f:
                     writer = csv.writer(f)
@@ -176,14 +178,14 @@ def main(args):
 
         print(f"Episode Finished. Total Reward: {episode_reward:.4f}")
 
-        # --- Episode-end summary logging (distinct row) ---
+        # --- Episode-end summary logging (full episode stats) ---
         yaw_array = np.vstack(yaw_history)     # shape (T, 9)
         power_array = np.array(power_history)  # shape (T,)
 
         mean_yaw = yaw_array.mean(axis=0)
         last_yaw = yaw_array[-1]
         mean_power = power_array.mean()
-        max_power = power_array.max()
+        max_power = power_array.max()  # max power over the whole episode
 
         with open(csv_path, "a", newline="") as f:
             writer = csv.writer(f)
