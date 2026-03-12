@@ -103,11 +103,6 @@ Model checkpoints are saved as:
 - Episode termination is currently time-limit only (`max_steps`), not a failure condition.
 - This repo expects MATLAB scripts `Initial_9` and `Timestep_9` to be callable from MATLAB’s path.
 
-## Citation
-
-WFSIM: https://github.com/TUDelft-DataDrivenControl/WFSim \
-Based on a 2-turbine case provided to me by Yuhan Su
-- This repo expects MATLAB scripts `Initial_9` and `Timestep_9` to be callable from MATLAB’s path.
 
 ## Citation
 
