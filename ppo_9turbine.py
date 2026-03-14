@@ -16,6 +16,7 @@ class WindFarmEnv:
         print("Starting MATLAB Engine...")
         self.eng = matlab.engine.start_matlab()
 
+        # Update these paths to your actual local paths
         base_path = r'/Users/akhilpatel/Desktop/Dissertation/WFSim-master'
         self.eng.addpath(os.path.join(base_path, 'layoutDefinitions'))
         self.eng.addpath(os.path.join(base_path, 'controlDefinitions'))
@@ -57,21 +58,23 @@ class WindFarmEnv:
         self.eng.Initial_9(float(self.wind_speed), float(self.wind_dir_deg), nargout=0)
 
         yaw0 = np.zeros(9, dtype=np.float64)
-        power0 = 0.0  # keep 0 at reset; first real power comes after step 0
+        power0 = 0.0  # first real power comes after step 0
         return np.concatenate([yaw0, [power0], self._wind_features()])
 
     def step(self, action):
         physical_yaw = action * 30.0
 
         phi = np.array(physical_yaw, dtype=np.float64)
-        CT_prime = 2 * np.ones(9, dtype=np.float64)
+        CT_prime = 2 * np.ones(9, dtype=np.float64)  # Constant CT
 
         phi_matlab = matlab.double(phi.tolist())
         CT_prime_matlab = matlab.double(CT_prime.tolist())
 
+        # Step simulation, returns turbine powers in Watts
         power = self.eng.Timestep_9(self.sim_time, phi_matlab, CT_prime_matlab, nargout=1)
         power_vals = np.array(power).flatten()
 
+        # Reward and power in MW
         total_power_mw = np.sum(power_vals) / 1e6
         reward = total_power_mw
 
@@ -86,6 +89,7 @@ class WindFarmEnv:
 
 
 def evaluate_baseline(env, state_norm):
+    """Baseline: yaw = 0 at all timesteps (deterministic)."""
     s = env.reset()
     if state_norm is not None:
         s = state_norm(s, update=False)
@@ -99,11 +103,11 @@ def evaluate_baseline(env, state_norm):
         if state_norm is not None:
             s_ = state_norm(s_, update=False)
         s = s_
-    arr = np.array(powers)
-    return float(arr.mean())
+    return float(np.mean(powers))
 
 
 def evaluate_agent(env, agent, state_norm):
+    """Deterministic eval: use PPO mean action."""
     s = env.reset()
     if state_norm is not None:
         s = state_norm(s, update=False)
@@ -117,8 +121,7 @@ def evaluate_agent(env, agent, state_norm):
         if state_norm is not None:
             s_ = state_norm(s_, update=False)
         s = s_
-    arr = np.array(powers)
-    return float(arr.mean())
+    return float(np.mean(powers))
 
 
 def main(args):
@@ -136,6 +139,7 @@ def main(args):
     total_steps = 0
     episode_idx = 0
 
+    # CSV that makes learning visible under random wind
     csv_path = "episode_metrics.csv"
     if not os.path.exists(csv_path):
         with open(csv_path, "w", newline="") as f:
@@ -198,6 +202,7 @@ def main(args):
         if episode_idx % args.eval_freq_episodes == 0:
             # Ensure baseline and eval see the SAME wind draw by reseeding before each reset
             eval_seed = args.seed + episode_idx
+
             np.random.seed(eval_seed)
             baseline_avg = evaluate_baseline(env, state_norm)
 
@@ -208,10 +213,8 @@ def main(args):
                 eval_impr = 100.0 * (eval_avg - baseline_avg) / baseline_avg
 
             print(
-                f"[EVAL ep={episode_idx}] wind_speed={env.wind_speed:.2f} m/s, "
-                f"wind_dir={env.wind_dir_deg:.1f} deg | "
-                f"baseline={baseline_avg:.3f} MW, eval={eval_avg:.3f} MW, "
-                f"impr={eval_impr:.2f}%"
+                f"[EVAL ep={episode_idx}] wind_speed={env.wind_speed:.2f} m/s, wind_dir={env.wind_dir_deg:.1f} deg | "
+                f"baseline={baseline_avg:.3f} MW, eval={eval_avg:.3f} MW, impr={eval_impr:.2f}%"
             )
 
         with open(csv_path, "a", newline="") as f:
@@ -241,10 +244,12 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("PPO for Wind Farm Control")
 
+    # Training
     parser.add_argument("--seed", type=int, default=10)
     parser.add_argument("--max_train_steps", type=int, default=50000)
     parser.add_argument("--save_freq", type=int, default=1000)
 
+    # Episodes / eval
     parser.add_argument("--episode_steps", type=int, default=1000)
     parser.add_argument("--eval_freq_episodes", type=int, default=5)
 
