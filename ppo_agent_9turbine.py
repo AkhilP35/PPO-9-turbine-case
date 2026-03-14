@@ -55,7 +55,7 @@ class RunningMeanStd:
         self.n += 1
         if self.n == 1:
             self.mean = x
-            self.std = x
+            self.std = np.ones_like(x)  # FIX: std should not be x on first update
         else:
             old_mean = self.mean.copy()
             self.mean = old_mean + (x - old_mean) / self.n
@@ -139,6 +139,16 @@ class PPO_Continuous:
             a_logprob = dist.log_prob(a)
         return a.numpy().flatten(), a_logprob.numpy().flatten()
 
+    def choose_action_deterministic(self, s):
+        """
+        Deterministic evaluation: use the mean action (mu) without sampling.
+        """
+        s = torch.unsqueeze(torch.tensor(s, dtype=torch.float), 0)
+        with torch.no_grad():
+            mu, _ = self.actor.forward(s)
+            a = torch.clamp(mu, -1.0, 1.0)
+        return a.numpy().flatten()
+
     def update(self, replay_buffer, total_steps):
         s, a, a_logprob, r, s_, dw, done = replay_buffer.numpy_to_tensor()
 
@@ -195,5 +205,7 @@ class PPO_Continuous:
         factor = 1 - total_steps / self.args.max_train_steps
         lr_a_now = self.args.lr_a * factor
         lr_c_now = self.args.lr_c * factor
-        for p in self.optimizer_actor.param_groups: p['lr'] = lr_a_now
-        for p in self.optimizer_critic.param_groups: p['lr'] = lr_c_now
+        for p in self.optimizer_actor.param_groups:
+            p['lr'] = lr_a_now
+        for p in self.optimizer_critic.param_groups:
+            p['lr'] = lr_c_now
