@@ -172,7 +172,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("PPO for Wind Farm Control")
     parser.add_argument("--seed", type=int, default=10)
-    parser.add_argument("--max_train_steps", type=int, default=50000, help="Increased for convergence")
+    parser.add_argument("--max_train_steps", type=int, default=150000, help="Increased for convergence")
     parser.add_argument("--save_freq", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--mini_batch_size", type=int, default=64)
