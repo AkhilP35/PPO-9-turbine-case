@@ -29,49 +29,67 @@ class WindFarmEnv:
         # Initialize simulation
         self.eng.Initial_9(nargout=0)
 
-        # State definition: [Yaw1..Yaw9, Normalized_Power]
+        # State definition: [Yaw1..Yaw9, Power]
         self.state_dim = 10
         self.action_dim = 9  # Yaw1..Yaw9
+
+        # Guard threshold for invalid solver outputs (total farm power per timestep, in MW)
+        # Recommended based on your observed ~34–38 MW averages:
+        self.max_reasonable_power_mw = 60.0
 
     def reset(self):
         self.sim_time = 0
         self.eng.Initial_9(nargout=0)
-        # Initial state: 0 yaw, 0 power (or dummy value)
-        return np.array([0.0] * 10)
+        # Initial state: 0 yaw, 0 power
+        return np.array([0.0] * 10, dtype=np.float64)
 
     def step(self, action):
         """
         Action is received in range [-1, 1] from PPO.
         We scale it to physical degrees (e.g., -30 to 30).
+        Returns: next_state, reward, done, invalid
         """
         # 1. Scale Action
-        # Map [-1, 1] -> [-30, 30] degrees
-        physical_yaw = action * 30.0
+        physical_yaw = action * 30.0  # Map [-1,1] -> [-30,30] deg
 
         # 2. Prepare MATLAB Inputs
         phi = np.array(physical_yaw, dtype=np.float64)
-        CT_prime = 2 * np.ones(9, dtype=np.float64)  # Constant CT (CT is set to 2)
+        CT_prime = 2 * np.ones(9, dtype=np.float64)
 
         phi_matlab = matlab.double(phi.tolist())
         CT_prime_matlab = matlab.double(CT_prime.tolist())
 
         # 3. Step Simulation
-        # Returns power in Watts
         power = self.eng.Timestep_9(self.sim_time, phi_matlab, CT_prime_matlab, nargout=1)
         power_vals = np.array(power).flatten()
 
+        # ---- Guard 1: invalid raw solver output ----
+        if power_vals.size == 0 or (not np.all(np.isfinite(power_vals))):
+            next_state = np.concatenate([physical_yaw, [0.0]])
+            reward = -100.0
+            done = True
+            invalid = True
+            return next_state, reward, done, invalid
+
         # 4. Construct Reward & Next State
-        total_power_mw = np.sum(power_vals) / 1e6
+        total_power_mw = float(np.sum(power_vals) / 1e6)
+
+        # ---- Guard 2: invalid/absurd derived value ----
+        if (not np.isfinite(total_power_mw)) or (total_power_mw < 0.0) or (total_power_mw > self.max_reasonable_power_mw):
+            next_state = np.concatenate([physical_yaw, [0.0]])
+            reward = -100.0
+            done = True
+            invalid = True
+            return next_state, reward, done, invalid
+
         reward = total_power_mw
-        # Construct State: [Yaw_Action_1..Yaw_Action_9, Current_Power_Output]
         next_state = np.concatenate([physical_yaw, [total_power_mw]])
 
         self.sim_time += 1
-        done = False
-        if self.sim_time >= self.max_steps:
-            done = True
+        done = self.sim_time >= self.max_steps
+        invalid = False
 
-        return next_state, reward, done
+        return next_state, reward, done, invalid
 
     def close(self):
         self.eng.quit()
@@ -97,40 +115,51 @@ def main(args):
 
     total_steps = 0
     episode_idx = 0
+    invalid_episodes = 0
 
-    # Initialize CSV (write header once) - ONE row per episode only
+    # Always reset CSV at start of each run
     csv_path = "episode_power.csv"
-    if not os.path.exists(csv_path):
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["episode", "avg_power_mw", "total_power_mw", "max_power_mw"])
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["episode", "avg_power_mw", "total_power_mw", "max_power_mw"])
 
     while total_steps < args.max_train_steps:
         s = env.reset()
         if args.use_state_norm:
             s = state_norm(s)
 
-        episode_reward = 0
+        episode_reward = 0.0
         done = False
-
+        episode_invalid = False
         power_history = []
 
-        while not done:
+        while not done and total_steps < args.max_train_steps:
+            # Safety: avoid NaN/Inf state reaching policy
+            if not np.all(np.isfinite(s)):
+                s = np.zeros_like(s)
+
             # Choose action (returns value in [-1, 1])
             a, a_logprob = agent.choose_action(s)
 
             # Execute in environment
-            s_, r, done = env.step(a)
+            s_raw, r, done, invalid = env.step(a)
 
-            # Save power from the environment state (UN-normalized)
-            power_history.append(s_[9])  # total power (MW)
+            if invalid:
+                # Do not normalize/store invalid transition
+                episode_reward += r
+                episode_invalid = True
+                done = True
+                break
+
+            # Save power from raw next state (UN-normalized)
+            power_history.append(s_raw[9])
 
             # Normalize Next State
+            s_ = s_raw
             if args.use_state_norm:
                 s_ = state_norm(s_)
 
             # Store Transition
-            # dw = True if dead/win, but here max_steps is just time limit, not failure
             dw = False
             replay_buffer.store(s, a, a_logprob, r, s_, dw, done)
 
@@ -147,13 +176,17 @@ def main(args):
             if total_steps % 100 == 0:
                 print(f"Step: {total_steps}, Episode Reward (Current): {episode_reward:.4f}")
 
+        if episode_invalid:
+            invalid_episodes += 1
+            print(f"[WARN] Episode {episode_idx} aborted due to invalid solver output. Aborted so far: {invalid_episodes}")
+
         print(f"Episode Finished. Total Reward: {episode_reward:.4f}")
 
-        # --- Episode-end power logging (one row per episode) ---
-        power_array = np.array(power_history)  # shape (T,)
-        avg_power_mw = power_array.mean() if len(power_array) > 0 else 0.0
-        total_power_mw = power_array.sum() if len(power_array) > 0 else 0.0
-        max_power_mw = power_array.max() if len(power_array) > 0 else 0.0
+        # Episode-end power logging
+        power_array = np.array(power_history, dtype=np.float64)
+        avg_power_mw = float(power_array.mean()) if power_array.size > 0 else 0.0
+        total_power_mw = float(power_array.sum()) if power_array.size > 0 else 0.0
+        max_power_mw = float(power_array.max()) if power_array.size > 0 else 0.0
 
         with open(csv_path, "a", newline="") as f:
             writer = csv.writer(f)
@@ -162,7 +195,7 @@ def main(args):
         episode_idx += 1
 
         # Save Models
-        if total_steps % args.save_freq == 0:
+        if total_steps > 0 and total_steps % args.save_freq == 0:
             torch.save(agent.actor.state_dict(), f'actor_step_{total_steps}.pth')
             torch.save(agent.critic.state_dict(), f'critic_step_{total_steps}.pth')
 
