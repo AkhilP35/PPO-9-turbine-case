@@ -25,7 +25,16 @@ class WindFarmEnv:
         print("Paths added to MATLAB...")
 
         self.sim_time = 0
-        self.max_steps = 1000
+        
+        # NEW: The number of simulation steps to wait for the wake to plateau
+        self.settling_steps = 400 
+        
+        # How many RL actions (choices) the agent gets per episode
+        self.actions_per_episode = 5
+        
+        # Total MATLAB simulation steps per episode (400 * 5 = 2000)
+        self.max_steps = self.settling_steps * self.actions_per_episode 
+
         # Initialize simulation
         self.eng.Initial_9(nargout=0)
 
@@ -34,7 +43,6 @@ class WindFarmEnv:
         self.action_dim = 9  # Yaw1..Yaw9
 
         # Guard threshold for invalid solver outputs (total farm power per timestep, in MW)
-        # Recommended based on your observed ~34–38 MW averages:
         self.max_reasonable_power_mw = 60.0
 
     def reset(self):
@@ -51,45 +59,51 @@ class WindFarmEnv:
         """
         # 1. Scale Action
         physical_yaw = action * 30.0  # Map [-1,1] -> [-30,30] deg
-
-        # 2. Prepare MATLAB Inputs
         phi = np.array(physical_yaw, dtype=np.float64)
         CT_prime = 2 * np.ones(9, dtype=np.float64)
 
         phi_matlab = matlab.double(phi.tolist())
         CT_prime_matlab = matlab.double(CT_prime.tolist())
 
-        # 3. Step Simulation
-        power = self.eng.Timestep_9(self.sim_time, phi_matlab, CT_prime_matlab, nargout=1)
-        power_vals = np.array(power).flatten()
+        total_power_mw = 0.0
+        invalid = False
 
-        # ---- Guard 1: invalid raw solver output ----
-        if power_vals.size == 0 or (not np.all(np.isfinite(power_vals))):
+        # --- 2. WAKE SETTLING LOOP (Action Repeat) ---
+        # Hold the yaw angles constant and step the simulator until the flow plateaus
+        for _ in range(self.settling_steps):
+            power = self.eng.Timestep_9(self.sim_time, phi_matlab, CT_prime_matlab, nargout=1)
+            power_vals = np.array(power).flatten()
+
+            # Guard 1: invalid raw solver output
+            if power_vals.size == 0 or (not np.all(np.isfinite(power_vals))):
+                invalid = True
+                break
+
+            total_power_mw = float(np.sum(power_vals) / 1e6)
+
+            # Guard 2: invalid/absurd derived value
+            if (not np.isfinite(total_power_mw)) or (total_power_mw < 0.0) or (total_power_mw > self.max_reasonable_power_mw):
+                invalid = True
+                break
+
+            self.sim_time += 1
+            
+            # Prevent exceeding maximum episode length during the settling phase
+            if self.sim_time >= self.max_steps:
+                break
+
+        # Handle Simulator Crash / Invalid Data
+        if invalid:
             next_state = np.concatenate([physical_yaw, [0.0]])
-            reward = -100.0
-            done = True
-            invalid = True
-            return next_state, reward, done, invalid
+            return next_state, -100.0, True, True
 
-        # 4. Construct Reward & Next State
-        total_power_mw = float(np.sum(power_vals) / 1e6)
-
-        # ---- Guard 2: invalid/absurd derived value ----
-        if (not np.isfinite(total_power_mw)) or (total_power_mw < 0.0) or (total_power_mw > self.max_reasonable_power_mw):
-            next_state = np.concatenate([physical_yaw, [0.0]])
-            reward = -100.0
-            done = True
-            invalid = True
-            return next_state, reward, done, invalid
-
+        # 3. Construct Reward & Next State based on the PLATEAUED power
         reward = total_power_mw
         next_state = np.concatenate([physical_yaw, [total_power_mw]])
 
-        self.sim_time += 1
         done = self.sim_time >= self.max_steps
-        invalid = False
 
-        return next_state, reward, done, invalid
+        return next_state, reward, done, False
 
     def close(self):
         self.eng.quit()
@@ -113,6 +127,7 @@ def main(args):
     agent = PPO_Continuous(args)
     state_norm = Normalization(shape=args.state_dim)
 
+    # Note: total_steps now counts the number of RL actions taken, NOT MATLAB timesteps.
     total_steps = 0
     episode_idx = 0
     invalid_episodes = 0
@@ -141,7 +156,7 @@ def main(args):
             # Choose action (returns value in [-1, 1])
             a, a_logprob = agent.choose_action(s)
 
-            # Execute in environment
+            # Execute in environment (This now takes 400 MATLAB steps internally)
             s_raw, r, done, invalid = env.step(a)
 
             if invalid:
@@ -173,14 +188,14 @@ def main(args):
                 replay_buffer.count = 0
 
             # Console logging
-            if total_steps % 100 == 0:
-                print(f"Step: {total_steps}, Episode Reward (Current): {episode_reward:.4f}")
+            if total_steps % 10 == 0:
+                print(f"Agent Step: {total_steps}, Episode Reward (Current): {episode_reward:.4f}")
 
         if episode_invalid:
             invalid_episodes += 1
             print(f"[WARN] Episode {episode_idx} aborted due to invalid solver output. Aborted so far: {invalid_episodes}")
 
-        print(f"Episode Finished. Total Reward: {episode_reward:.4f}")
+        print(f"Episode {episode_idx} Finished. Total Reward (Sum of Plateaus): {episode_reward:.4f}")
 
         # Episode-end power logging
         power_array = np.array(power_history, dtype=np.float64)
@@ -205,17 +220,22 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("PPO for Wind Farm Control")
     parser.add_argument("--seed", type=int, default=10)
-    parser.add_argument("--max_train_steps", type=int, default=150000, help="Increased for convergence")
+    
+    # max_train_steps now refers to the number of times the AGENT makes a decision.
+    # 30,000 steps = 6,000 episodes (at 5 actions/episode). Adjust as needed!
+    parser.add_argument("--max_train_steps", type=int, default=30000)
     parser.add_argument("--save_freq", type=int, default=1000)
-    parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--mini_batch_size", type=int, default=64)
+    
+    # Run 2 Hyperparameters
+    parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--mini_batch_size", type=int, default=128)
     parser.add_argument("--hidden_width", type=int, default=128)
-    parser.add_argument("--lr_a", type=float, default=3e-4) #learning rate for actor
-    parser.add_argument("--lr_c", type=float, default=3e-4) #learning rate for critic
+    parser.add_argument("--lr_a", type=float, default=2e-4) # learning rate for actor
+    parser.add_argument("--lr_c", type=float, default=1e-4) # learning rate for critic
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lamda", type=float, default=0.95)
-    parser.add_argument("--epsilon", type=float, default=0.2)
-    parser.add_argument("--K_epochs", type=int, default=10)
+    parser.add_argument("--epsilon", type=float, default=0.15)
+    parser.add_argument("--K_epochs", type=int, default=8)
     parser.add_argument("--entropy_coef", type=float, default=0.01)
     parser.add_argument("--use_state_norm", type=bool, default=True)
     parser.add_argument("--use_lr_decay", type=bool, default=True)
