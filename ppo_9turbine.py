@@ -27,10 +27,10 @@ class WindFarmEnv:
         self.sim_time = 0
         
         # NEW: The number of simulation steps to wait for the wake to plateau
-        self.settling_steps = 400 
+        self.settling_steps = 380 
         
         # How many RL actions (choices) the agent gets per episode
-        self.actions_per_episode = 5
+        self.actions_per_episode = 1
         
         # Total MATLAB simulation steps per episode (400 * 5 = 2000)
         self.max_steps = self.settling_steps * self.actions_per_episode 
@@ -43,7 +43,7 @@ class WindFarmEnv:
         self.action_dim = 9  # Yaw1..Yaw9
 
         # Guard threshold for invalid solver outputs (total farm power per timestep, in MW)
-        self.max_reasonable_power_mw = 60.0
+        self.max_reasonable_power_mw = 100.0
 
     def reset(self):
         self.sim_time = 0
@@ -223,12 +223,12 @@ if __name__ == '__main__':
     
     # max_train_steps now refers to the number of times the AGENT makes a decision.
     # 30,000 steps = 6,000 episodes (at 5 actions/episode). Adjust as needed!
-    parser.add_argument("--max_train_steps", type=int, default=30000)
+    parser.add_argument("--max_train_steps", type=int, default=5000)
     parser.add_argument("--save_freq", type=int, default=1000)
     
     # Run 2 Hyperparameters
-    parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--mini_batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--mini_batch_size", type=int, default=16)
     parser.add_argument("--hidden_width", type=int, default=128)
     parser.add_argument("--lr_a", type=float, default=2e-4) # learning rate for actor
     parser.add_argument("--lr_c", type=float, default=1e-4) # learning rate for critic
